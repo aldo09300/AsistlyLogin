@@ -1,0 +1,46 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Perfil de cada usuario. Nadie puede cambiar su rol ni su dispositivo vinculado.
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(
+             ['fullName', 'code', 'email', 'role', 'deviceId', 'createdAt'])
+        && request.resource.data.role in ['student', 'teacher']
+        && request.resource.data.email == request.auth.token.email
+        && request.auth.token.email.matches('.*@udla[.]edu[.]co$')
+        // Docente: sin dispositivo. Estudiante: debe reservar su dispositivo
+        // en la misma transacción (devices/{deviceId}.uid == su uid).
+        && ((request.resource.data.role == 'teacher' && request.resource.data.deviceId == null)
+            || (request.resource.data.role == 'student'
+                && request.resource.data.deviceId is string
+                && getAfter(/databases/$(database)/documents/devices/$(request.resource.data.deviceId)).data.uid == uid));
+
+      allow update: if isOwner(uid)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.deviceId == resource.data.deviceId
+        && request.resource.data.email == resource.data.email;
+
+      allow delete: if false;
+    }
+
+    // Reserva de dispositivos: un celular = una cuenta de estudiante.
+    match /devices/{deviceId} {
+      allow get: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
